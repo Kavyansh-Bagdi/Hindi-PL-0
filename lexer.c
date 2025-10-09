@@ -1,6 +1,4 @@
-
 #include <sys/stat.h>
-
 #include <ctype.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -11,6 +9,9 @@
 #include <unistd.h>
 #include <errno.h>
 #include <limits.h>
+#include <wchar.h>
+#include <wctype.h>
+#include <locale.h>
 
 #define TOK_IDENT	'I'
 #define TOK_NUMBER	'N'
@@ -66,7 +67,7 @@
 * number      = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" |
 */ 
 
-static char *raw, *token;
+static wchar_t *raw, *token;
 static int type;
 static size_t line = 1;
 
@@ -108,12 +109,28 @@ readin(char *file)
 	if (fstat(fd, &st) == -1)
 		error("couldn't get file size");
 
-	if ((raw = malloc(st.st_size + 1)) == NULL)
-		error("malloc failed");
+	char *raw_bytes;
+    if ((raw_bytes = malloc(st.st_size + 1)) == NULL)
+        error("malloc failed");
 
-	if (read(fd, raw, st.st_size) != st.st_size)
-		error("couldn't read %s", file);
-	raw[st.st_size] = '\0';
+    if (read(fd, raw_bytes, st.st_size) != st.st_size)
+        error("couldn't read %s", file);
+    raw_bytes[st.st_size] = '\0';
+
+    size_t wlen = mbstowcs(NULL, raw_bytes, 0); 
+    if (wlen == (size_t)-1)
+        error("invalid multibyte sequence");
+
+    raw = malloc((wlen + 1) * sizeof(wchar_t));
+    if (!raw)
+        error("malloc failed");
+
+    mbstowcs(raw, raw_bytes, wlen + 1);
+    free(raw_bytes);
+
+	token = malloc((wlen + 1) * sizeof(wchar_t));
+	if (!token)
+		error("malloc failed for token");
 
 	(void) close(fd);
 }
@@ -136,121 +153,106 @@ comment(void)
 	}
 }
 
+static int is_devanagari_combining(wchar_t c) {
+    return (c >= 0x093A && c <= 0x094F) ||
+           (c >= 0x0951 && c <= 0x0954) ||
+           (c >= 0x0962 && c <= 0x0963);
+}
+
 static int
 ident(void)
 {
-	char *p;
-	size_t i, len;
+    wchar_t *start = raw;
+    
+    if (!iswalpha(*raw) && *raw != L'_')
+        error("invalid identifier start: %lc", *raw);
 
-	p = raw;
-	while (isalnum(*raw) || *raw == '_')
-		++raw;
+    raw++;
 
-	len = raw - p;
+    while (iswalpha(*raw) || iswdigit(*raw) || *raw == L'_' || is_devanagari_combining(*raw))
+        raw++;
 
-	--raw;
+    size_t len = raw - start;
+    wcsncpy(token, start, len);
+    token[len] = L'\0';
 
-	free(token);
-
-	if ((token = malloc(len + 1)) == NULL)
-		error("malloc failed");
-
-	for (i = 0; i < len; i++)
-		token[i] = *p++;
-	token[i] = '\0';
-
-	if (!strcmp(token, "नियत"))
+	if (!wcscmp(token, L"नियत"))
 		return TOK_CONST;
-	else if (!strcmp(token, "चर"))
+	else if (!wcscmp(token, L"चर"))
 		return TOK_VAR;
-	else if (!strcmp(token, "प्रक्रिया"))
+	else if (!wcscmp(token, L"प्रक्रिया"))
 		return TOK_PROCEDURE;
-	else if (!strcmp(token, "आह्वान"))
+	else if (!wcscmp(token, L"आह्वान"))
 		return TOK_CALL;
-	else if (!strcmp(token, "आरम्भ"))
+	else if (!wcscmp(token, L"आरम्भ"))
 		return TOK_BEGIN;
-	else if (!strcmp(token, "समापन"))
+	else if (!wcscmp(token, L"समापन"))
 		return TOK_END;
-	else if (!strcmp(token, "यदि"))
+	else if (!wcscmp(token, L"यदि"))
 		return TOK_IF;
-	else if (!strcmp(token, "तो"))
+	else if (!wcscmp(token, L"तो"))
 		return TOK_THEN;
-	else if (!strcmp(token, "जबतक"))
+	else if (!wcscmp(token, L"जबतक"))
 		return TOK_WHILE;
-	else if (!strcmp(token, "करो"))
+	else if (!wcscmp(token, L"करो"))
 		return TOK_DO;
-	else if (!strcmp(token, "विषम"))
+	else if (!wcscmp(token, L"विषम"))
 		return TOK_ODD;
 
 	return TOK_IDENT;
 }
 
-long number() {
-    char *endptr;
-    const char *errstr = NULL;
-    errno = 0;
+static int
+number(void) {
+    wchar_t *start = raw;
+    while (iswdigit(*raw))
+        raw++;
 
-    long val = strtol(token, &endptr, 10);
+    size_t len = raw - start;
+    wcsncpy(token, start, len);
+    token[len] = L'\0';
 
-    if (endptr == token || *endptr != '\0')
-        errstr = "invalid";
-    else if ((val == LONG_MAX || val == LONG_MIN) && errno == ERANGE)
-        errstr = "out of range";
-
-    if (errstr)
-        fprintf(stderr, "number parse error: %s\n", errstr);
-
-    return val;
+    return TOK_NUMBER;
 }
 
 static int
 lex(void)
 {
-
 again:
-	/* Skip whitespace.  */
-	while (*raw == ' ' || *raw == '\t' || *raw == '\n') {
-		if (*raw++ == '\n')
-			++line;
-	}
+    while (*raw == L' ' || *raw == L'\t' || *raw == L'\n') {
+        if (*raw++ == L'\n')
+            ++line;
+    }
 
-	if (isalpha(*raw) || *raw == '_')
-		return ident();
+    if (iswalpha(*raw) || *raw == L'_')
+        return ident();
 
-	if (isdigit(*raw))
-		return number();
+    if (iswdigit(*raw))
+        return number();
 
-	switch (*raw) {
-	case '{':
-		comment();
-		goto again;
-	case '.':
-	case '=':
-	case ',':
-	case ';':
-	case '#':
-	case '<':
-	case '>':
-	case '+':
-	case '-':
-	case '*':
-	case '/':
-	case '(':
-	case ')':
-		return (*raw);
-	case ':':
-		if (*++raw != '=')
-			error("unknown token: ':%c'", *raw);
+    switch (*raw) {
+    case L'{':
+        comment();
+        goto again;
+    case L'.': case L'=': case L',': case L';':
+    case L'#': case L'<': case L'>': case L'+':
+    case L'-': case L'*': case L'/': case L'(':
+    case L')':
+        return *raw++;
+    case L':':
+        if (*++raw != L'=')
+            error("unknown token: ':%lc'", *raw);
+        ++raw;
+        return TOK_ASSIGN;
+    case L'\0':
+        return 0;
+    default:
+        error("unknown token: '%lc'", *raw);
+    }
 
-		return TOK_ASSIGN;
-	case '\0':
-		return 0;
-	default:
-		error("unknown token: '%c'", *raw);
-	}
-
-	return 0;
+    return 0;
 }
+
 
 /*
  * Parser.
@@ -259,46 +261,49 @@ again:
 static void
 parse(void)
 {
+    while ((type = lex()) != 0) {
+        fwprintf(stdout, L"%lu|%d\t", line, type);
 
-	while ((type = lex()) != 0) {
-		++raw;
-		(void) fprintf(stdout, "%lu|%d\t", line, type);
-		switch (type) {
-		case TOK_IDENT:
-		case TOK_NUMBER:
-		case TOK_CONST:
-		case TOK_VAR:
-		case TOK_PROCEDURE:
-		case TOK_CALL:
-		case TOK_BEGIN:
-		case TOK_END:
-		case TOK_IF:
-		case TOK_THEN:
-		case TOK_WHILE:
-		case TOK_DO:
-		case TOK_ODD:
-			(void) fprintf(stdout, "%s", token);
-			break;
-		case TOK_DOT:
-		case TOK_EQUAL:
-		case TOK_COMMA:
-		case TOK_SEMICOLON:
-		case TOK_HASH:
-		case TOK_LESSTHAN:
-		case TOK_GREATERTHAN:
-		case TOK_PLUS:
-		case TOK_MINUS:
-		case TOK_MULTIPLY:
-		case TOK_DIVIDE:
-		case TOK_LPAREN:
-		case TOK_RPAREN:
-			(void) fputc(type, stdout);
-			break;
-		case TOK_ASSIGN:
-			(void) fputs(":=", stdout);
-		}
-		(void) fputc('\n', stdout);
-	}
+        switch (type) {
+            case TOK_IDENT:
+            case TOK_NUMBER:
+            case TOK_CONST:
+            case TOK_VAR:
+            case TOK_PROCEDURE:
+            case TOK_CALL:
+            case TOK_BEGIN:
+            case TOK_END:
+            case TOK_IF:
+            case TOK_THEN:
+            case TOK_WHILE:
+            case TOK_DO:
+            case TOK_ODD:
+                fwprintf(stdout, L"%ls", token);
+                break;
+
+            case TOK_DOT:
+            case TOK_EQUAL:
+            case TOK_COMMA:
+            case TOK_SEMICOLON:
+            case TOK_HASH:
+            case TOK_LESSTHAN:
+            case TOK_GREATERTHAN:
+            case TOK_PLUS:
+            case TOK_MINUS:
+            case TOK_MULTIPLY:
+            case TOK_DIVIDE:
+            case TOK_LPAREN:
+            case TOK_RPAREN:
+                fputwc(type, stdout);
+                break;
+
+            case TOK_ASSIGN:
+                fwprintf(stdout, L":=");
+                break;
+        }
+
+        fputwc(L'\n', stdout);
+    }
 }
 
 /*
@@ -308,7 +313,8 @@ parse(void)
 int
 main(int argc, char *argv[])
 {
-	char *startp;
+	setlocale(LC_ALL, "en_US.UTF-8");
+    wchar_t *startp;
 
 	if (argc != 2) {
 		(void) fputs("[INFO] Usage: pl0c file.hindi\n", stderr);
@@ -321,6 +327,7 @@ main(int argc, char *argv[])
 	parse();
 
 	free(startp);
+	free(token);
 
 	return 0;
 }
