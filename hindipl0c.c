@@ -12,7 +12,7 @@
 #include <wchar.h>
 #include <wctype.h>
 #include <locale.h>
-
+#include "hashmap/hashmap.c"
 
 #define CHECK_LHS	0
 #define CHECK_RHS	1
@@ -91,14 +91,7 @@ struct symtab {
 };
 static struct symtab *head;
 
-struct varmap {
-    wchar_t *hindi;
-    char english[32];
-    struct varmap *next;
-};
-
-static struct varmap *varmap_head = NULL;
-static int var_counter = 0;
+HashMap* map;
 
 /*
  * Misc. functions.
@@ -163,46 +156,6 @@ readin(char *file)
 
 	(void) close(fd);
 }
-
-// static void
-// varconversion(const wchar_t *name)
-// {
-//     struct varmap *curr = varmap_head;
-
-//     while (curr) {
-//         if (wcscmp(curr->hindi, name) == 0)
-//             return;
-//         curr = curr->next;
-//     }
-
-//     struct varmap *new = malloc(sizeof(struct varmap));
-//     if (!new)
-//         error("malloc failed in varconversion");
-
-//     new->hindi = wcsdup(name);
-//     if (!new->hindi)
-//         error("malloc failed in varconversion");
-
-//     snprintf(new->english, sizeof(new->english), "a%d", ++var_counter);
-
-//     new->next = varmap_head;
-//     varmap_head = new;
-// }
-
-// static const char *
-// get_converted_name(const wchar_t *name)
-// {
-//     struct varmap *curr = varmap_head;
-
-//     while (curr) {
-//         if (wcscmp(curr->hindi, name) == 0)
-//             return curr->english;  
-//         curr = curr->next;
-//     }
-
-// 	error("[Error] : Symbol Table");
-//     return NULL; 
-// }
 
 /*
 * Semantics.
@@ -401,14 +354,15 @@ ident(void)
 	else if (!wcscmp(token, L"में"))
 		return TOK_INTO;
 
-	// varconversionl(token);
+	insert(map,token);
+	no_ident++;
 	return TOK_IDENT;
 }
 
 static int
 number(void) {
     wchar_t *start = raw;
-    while (iswdigit(*raw))
+    while (iswdigit(*raw) || isdigit(*raw))
         raw++;
 
     size_t len = raw - start;
@@ -430,7 +384,7 @@ again:
     if (iswalpha(*raw) || *raw == L'_')
         return ident();
 
-    if (iswdigit(*raw))
+    if (iswdigit(*raw) || isdigit(*raw))
         return number();
 
     switch (*raw) {
@@ -479,9 +433,7 @@ cg_end(void)
 static void
 cg_const(void)
 {
-
-	// aout(L"const long %s=", get_converted_name(token));
-	aout(L"const long %s=", token);
+	aout(L"const long %s=", get(map,token));
 }
 
 static void
@@ -496,11 +448,10 @@ cg_symbol(void)
 {
 	switch (type) {
 	case TOK_IDENT:
-		// aout(L"%hs", get_converted_name(token));
-		aout(L"%hs", token);
+		aout(L"%s", get(map,token));
 		break;
 	case TOK_NUMBER:
-		aout(L"%s", token);
+		aout(L"%ls", token);
 		break;
 	case TOK_BEGIN:
 		aout(L"{");
@@ -570,8 +521,7 @@ static void
 cg_var(void)
 {
 
-	// aout(L"long %hs;\n", get_converted_name(token));
-	aout(L"long %hs;\n", token);
+	aout(L"long %hs;\n", get(map,token));
 }
 
 static void
@@ -584,7 +534,7 @@ cg_procedure(void)
         aout(L"    setlocale(LC_ALL, \"en_US.UTF-8\");\n");
     } else {
         aout(L"void\n");
-        aout(L"%s(void)\n", token);
+        aout(L"%s(void)\n", get(map,token));
         aout(L"{\n");
     }
 }
@@ -602,10 +552,22 @@ cg_epilogue(void)
 }
 
 static void
+cg_readchar(void)
+{
+    aout(L"wint_t __wch = fgetwc(stdin);\n");
+    aout(L"if (__wch == WEOF) {\n");
+    aout(L"    /* treat EOF as -1 or handle error */\n");
+    aout(L"    (void) fprintf(stderr, \"unexpected EOF when reading character\\n\");\n");
+    aout(L"    exit(1);\n");
+    aout(L"}\n");
+    aout(L"%s = (long) __wch;\n", get(map,token));
+}
+
+
 cg_call(void)
 {
 
-	aout(L"%s();\n", token);
+	aout(L"%s();\n", get(map,token));
 }
 
 static void
@@ -616,10 +578,12 @@ cg_odd(void)
 }
 
 static void
-cg_writechar(void)
+cg_writechar(int isIdent)
 {
-	// aout(L"(void) fprintf(stdout, \"%%c\", (unsigned char) %s);", get_converted_name(token));
-	aout(L"(void) fprintf(stdout, \"%%c\", (unsigned char) %s);", token);
+	if(isIdent)
+		aout(L"(void) fprintf(stdout, \"%%c\", (unsigned char) %s);", get(map,token));
+	else	
+		aout(L"(void) fprintf(stdout, \"%%c\", (unsigned char) %s);", token);
 }
 
 static void
@@ -631,7 +595,7 @@ cg_readchar(void)
     aout(L"    (void) fprintf(stderr, \"unexpected EOF when reading character\\n\");\n");
     aout(L"    exit(1);\n");
     aout(L"}\n");
-    aout(L"%s = (long) __wch;\n", token);
+    aout(L"%s = (long) __wch;\n", get(map,token));
 }
 
 
@@ -650,14 +614,16 @@ cg_readint(void)
     aout(L"    (void) fprintf(stderr, \"invalid number: %%s\\n\", __stdin);\n");
     aout(L"    exit(1);\n");
     aout(L"}\n");
-    aout(L"%s = (long) __val_ll;\n", token);
+    aout(L"%s = (long) __val_ll;\n", get(map,token));
 }
 
 static void
-cg_writeint(void)
-{
-	// aout(L"(void) fprintf(stdout, \"%%ld\", (long) %s);", get_converted_name(token));
-	aout(L"(void) fprintf(stdout, \"%%ld\", (long) %s);", token);
+cg_writeint(int isIdent)
+{	
+	if(isIdent)
+		aout(L"(void) fprintf(stdout, \"%%ld\", (long) %s);", get(map,token));
+	else
+		aout(L"(void) fprintf(stdout, \"%%ld\", (long) %s);", token);
 }
 
 static void
@@ -822,10 +788,13 @@ statement(void)
 		break;
 	case TOK_WRITEINT:
 		expect(TOK_WRITEINT);
-		if (type == TOK_IDENT || type == TOK_NUMBER) {
+		if (type == TOK_IDENT) {
 			if (type == TOK_IDENT)
 				symcheck(CHECK_RHS);
-			cg_writeint();
+			cg_writeint(1);
+		}
+		else if(type == TOK_NUMBER){
+			cg_writeint(0);
 		}
 
 		if (type == TOK_IDENT)
@@ -838,10 +807,13 @@ statement(void)
 		break;
 	case TOK_WRITECHAR:
 		expect(TOK_WRITECHAR);
-		if (type == TOK_IDENT || type == TOK_NUMBER) {
+		if (type == TOK_IDENT) {
 			if (type == TOK_IDENT)
 				symcheck(CHECK_RHS);
-			cg_writechar();
+			cg_writechar(1);
+		}
+		if(type == TOK_NUMBER) {
+			cg_writechar(0);
 		}
 
 		if (type == TOK_IDENT)
@@ -990,6 +962,7 @@ int
 main(int argc, char *argv[])
 {
 	setlocale(LC_ALL, "en_US.UTF-8");
+	map = create_hashmap(1000);
     wchar_t *startp;
 
 	if (argc != 2) {
@@ -1004,6 +977,6 @@ main(int argc, char *argv[])
 
 	free(startp);
 	free(token);
-
+	free_hashmap(map);
 	return 0;
 }
