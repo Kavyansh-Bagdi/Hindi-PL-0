@@ -13,6 +13,17 @@
 #include <wctype.h>
 #include <locale.h>
 
+
+#define CHECK_LHS	0
+#define CHECK_RHS	1
+#define CHECK_CALL	2
+#define TOK_WRITEINT 'w'
+#define TOK_WRITECHAR 'H'
+#define TOK_READINT 'R'
+#define TOK_READCHAR 'h'
+#define TOK_INTO 'n'
+
+#define PL0C_VERSION "1.0.0" 
 #define TOK_IDENT	'I'
 #define TOK_NUMBER	'N'
 #define TOK_CONST	'C'
@@ -70,6 +81,24 @@
 static wchar_t *raw, *token;
 static int depth, type;
 static size_t line = 1;
+static long proc = 0;
+
+struct symtab {
+	int depth;
+	int type;
+	wchar_t *name;
+	struct symtab *next;
+};
+static struct symtab *head;
+
+struct varmap {
+    wchar_t *hindi;
+    char english[32];
+    struct varmap *next;
+};
+
+static struct varmap *varmap_head = NULL;
+static int var_counter = 0;
 
 /*
  * Misc. functions.
@@ -135,6 +164,156 @@ readin(char *file)
 	(void) close(fd);
 }
 
+static const char *
+varconversion(const wchar_t *name)
+{
+    struct varmap *curr = varmap_head;
+
+    while (curr) {
+        if (wcscmp(curr->hindi, name) == 0)
+            return curr->english;
+        curr = curr->next;
+    }
+
+    struct varmap *new = malloc(sizeof(struct varmap));
+    if (!new)
+        error("malloc failed in varconversion");
+
+    new->hindi = wcsdup(name);
+    if (!new->hindi)
+        error("malloc failed in varconversion");
+
+    snprintf(new->english, sizeof(new->english), "a%d", ++var_counter);
+
+    new->next = varmap_head;
+    varmap_head = new;
+
+    return new->english;
+}
+
+
+/*
+* Semantics.
+*/
+
+static void
+initsymtab(void)
+{
+	struct symtab *new;
+
+	if ((new = malloc(sizeof(struct symtab))) == NULL)
+		error("malloc failed");
+
+	new->depth = 0;
+	new->type = TOK_PROCEDURE;
+	new->name = L"main";
+	new->next = NULL;
+
+	head = new;
+}
+
+static void
+addsymbol(int type)
+{
+    struct symtab *curr, *new;
+
+    if (head == NULL) {
+        head = malloc(sizeof(struct symtab));
+        if (head == NULL)
+            error("malloc failed");
+
+        head->depth = depth - 1;
+        head->type = type;
+        head->name = wcsdup(token);
+        if (head->name == NULL)
+            error("malloc failed");
+
+        head->next = NULL;
+        return;
+    }
+
+    curr = head;
+    while (1) {
+        if (!wcscmp(curr->name, token)) {
+            if (curr->depth == (depth - 1))
+                error("duplicate symbol: %ls", token);
+        }
+
+        if (curr->next == NULL)
+            break;
+
+        curr = curr->next;
+    }
+
+    new = malloc(sizeof(struct symtab));
+    if (new == NULL)
+        error("malloc failed");
+
+    new->depth = depth - 1;
+    new->type = type;
+    new->name = wcsdup(token);
+    if (new->name == NULL)
+        error("malloc failed");
+
+    new->next = NULL;
+    curr->next = new;
+}
+
+static void
+destroysymbols(void)
+{
+    struct symtab *curr = head;
+    struct symtab *prev = NULL;
+
+    while (curr != NULL) {
+        if (curr->depth >= depth) {
+            struct symtab *to_free = curr;
+            if (prev)
+                prev->next = curr->next;
+            else
+                head = curr->next;
+
+            curr = curr->next;
+            free(to_free->name);
+            free(to_free);
+        } else {
+            prev = curr;
+            curr = curr->next;
+        }
+    }
+}
+
+static void
+symcheck(int check)
+{
+	struct symtab *curr, *ret = NULL;
+
+	curr = head;
+	while (curr != NULL) {
+		if (!wcscmp(token, curr->name))
+			ret = curr;
+		curr = curr->next;
+	}
+
+	if (ret == NULL)
+		error("undefined symbol: %s", token);
+
+	switch (check) {
+	case CHECK_LHS:
+		if (ret->type != TOK_VAR)
+			error("must be a variable: %s", token);
+		break;
+	case CHECK_RHS:
+		if (ret->type == TOK_PROCEDURE)
+			error("must not be a procedure: %s", token);
+		break;
+	case CHECK_CALL:
+		if (ret->type != TOK_PROCEDURE)
+			error("must be a procedure: %s", token);
+	}
+}
+
+
 /*
  * Lexer.
  */
@@ -169,8 +348,9 @@ ident(void)
 
     raw++;
 
-    while (iswalpha(*raw) || iswdigit(*raw) || *raw == L'_' || is_devanagari_combining(*raw))
-        raw++;
+    while (*raw != L'\0' && (iswalpha(*raw) || iswdigit(*raw) || *raw == L'_' || is_devanagari_combining(*raw)))
+		raw++;	
+
 
     size_t len = raw - start;
     wcsncpy(token, start, len);
@@ -198,7 +378,16 @@ ident(void)
 		return TOK_DO;
 	else if (!wcscmp(token, L"विषम"))
 		return TOK_ODD;
-
+	else if (!wcscmp(token, L"अंक_लिखें"))
+		return TOK_WRITEINT;
+	else if (!wcscmp(token, L"वर्ण_लिखें"))
+		return TOK_WRITECHAR;
+	else if (!wcscmp(token, L"अंक_पढ़ें"))
+		return TOK_READINT;
+	else if (!wcscmp(token, L"वर्ण_पढ़ें"))
+		return TOK_READCHAR;
+	else if (!wcscmp(token, L"में"))
+		return TOK_INTO;
 	return TOK_IDENT;
 }
 
@@ -253,6 +442,216 @@ again:
     return 0;
 }
 
+/*
+ * Code generator.
+ */
+
+static void
+aout(const wchar_t *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vwprintf(fmt, ap);
+    va_end(ap);
+}
+
+static void
+cg_end(void)
+{
+
+	aout(L"}\n/* PL/0 compiler %s */\n", PL0C_VERSION);
+}
+
+static void
+cg_const(void)
+{
+
+	aout(L"const long %s=", token);
+}
+
+static void
+cg_semicolon(void)
+{
+
+	aout(L";\n");
+}
+
+static void
+cg_symbol(void)
+{
+	switch (type) {
+	case TOK_IDENT:
+		aout(L"%hs", varconversion(token));
+		break;
+	case TOK_NUMBER:
+		aout(L"%s", token);
+		break;
+	case TOK_BEGIN:
+		aout(L"{\n");
+		break;
+	case TOK_END:
+		aout(L";\n}\n");
+		break;
+	case TOK_IF:
+		aout(L"if(");
+		break;
+	case TOK_THEN:
+	case TOK_DO:
+		aout(L")");
+		break;
+	case TOK_ODD:
+		aout(L"(");
+		break;
+	case TOK_WHILE:
+		aout(L"while(");
+		break;
+	case TOK_EQUAL:
+		aout(L"==");
+		break;
+	case TOK_COMMA:
+		aout(L",");
+		break;
+	case TOK_ASSIGN:
+		aout(L"=");
+		break;
+	case TOK_HASH:
+		aout(L"!=");
+		break;
+	case TOK_LESSTHAN:
+		aout(L"<");
+		break;
+	case TOK_GREATERTHAN:
+		aout(L">");
+		break;
+	case TOK_PLUS:
+		aout(L"+");
+		break;
+	case TOK_MINUS:
+		aout(L"-");
+		break;
+	case TOK_MULTIPLY:
+		aout(L"*");
+		break;
+	case TOK_DIVIDE:
+		aout(L"/");
+		break;
+	case TOK_LPAREN:
+		aout(L"(");
+		break;
+	case TOK_RPAREN:
+		aout(L")");
+	}
+}
+
+static void
+cg_crlf(void)
+{
+
+	aout(L"\n");
+}
+
+static void
+cg_var(void)
+{
+
+	aout(L"long %hs;\n", varconversion(token));
+}
+
+static void
+cg_procedure(void)
+{
+
+	if (proc == 0) {
+		aout(L"int\n");
+		aout(L"main(int argc, char *argv[])\n");
+	} else {
+		aout(L"void\n");
+		aout(L"%s(void)\n", token);
+	}
+
+	aout(L"{\n");
+}
+
+static void
+cg_epilogue(void)
+{
+
+	aout(L";");
+
+	if (proc == 0)
+		aout(L"return 0;");
+
+	aout(L"\n}\n\n");
+}
+
+static void
+cg_call(void)
+{
+
+	aout(L"%s();\n", token);
+}
+
+static void
+cg_odd(void)
+{
+
+	aout(L")&1");
+}
+
+static void
+cg_writechar(void)
+{
+	aout(L"(void) fprintf(stdout, \"%%c\", (unsigned char) %s);", token);
+}
+
+static void
+cg_writeint(void)
+{
+	aout(L"(void) fprintf(stdout, \"%%ld\", (long) %s);", token);
+}
+
+static void
+cg_init(void)
+{
+	aout(L"#include <stdio.h>\n");
+	aout(L"static char __stdin[24];\n\n");
+	aout(L"#include <wchar.h>");
+	aout(L"#include <wctype.h>");
+	aout(L"#include <locale.h>");
+	aout(L"setlocale(LC_ALL, \"en_US.UTF-8\");");
+}
+
+static void
+cg_readchar(void)
+{
+    aout(L"wint_t __wch = fgetwc(stdin);\n");
+    aout(L"if (__wch == WEOF) {\n");
+    aout(L"    /* treat EOF as -1 or handle error */\n");
+    aout(L"    (void) fprintf(stderr, \"unexpected EOF when reading character\\n\");\n");
+    aout(L"    exit(1);\n");
+    aout(L"}\n");
+    aout(L"%s = (long) __wch;\n", token);
+}
+
+
+static void
+cg_readint(void)
+{
+    /* Portable integer input using strtoll */
+    aout(L"char __stdin[64];\n");
+    aout(L"char *endptr;\n");
+    aout(L"long long __val_ll;\n");
+    aout(L"if (!fgets(__stdin, sizeof(__stdin), stdin)) { perror(\"fgets\"); exit(1); }\n");
+    aout(L"if(__stdin[strlen(__stdin) - 1] == '\\n') __stdin[strlen(__stdin) - 1] = '\\0';\n");
+    aout(L"errno = 0;\n");
+    aout(L"__val_ll = strtoll(__stdin, &endptr, 10);\n");
+    aout(L"if (endptr == __stdin || *endptr != '\\0' || (errno == ERANGE && (__val_ll == LLONG_MAX || __val_ll == LLONG_MIN))) {\n");
+    aout(L"    (void) fprintf(stderr, \"invalid number: %%s\\n\", __stdin);\n");
+    aout(L"    exit(1);\n");
+    aout(L"}\n");
+    aout(L"%s = (long) __val_ll;\n", token);
+}
+
 
 /*
  * Parser.
@@ -276,19 +675,40 @@ expect(int match)
 	next();
 }
 
-static void expression(void);
+static void term(void);
+
+static void
+expression(void)
+{
+	if (type == TOK_PLUS || type == TOK_MINUS) {
+		cg_symbol();
+		next();
+	}
+	term();
+	while (type == TOK_PLUS || type == TOK_MINUS) {
+		cg_symbol();
+		next();
+		term();
+	}
+}
 
 static void
 factor(void)
 {
 	switch (type) {
 	case TOK_IDENT:
+		symcheck(CHECK_RHS);
+		/* Fallthru */
 	case TOK_NUMBER:
+		cg_symbol();
 		next();
 		break;
 	case TOK_LPAREN:
+		cg_symbol();
 		expect(TOK_LPAREN);
 		expression();
+		if (type == TOK_RPAREN)
+			cg_symbol();
 		expect(TOK_RPAREN);
 	}
 }
@@ -296,37 +716,22 @@ factor(void)
 static void
 term(void)
 {
-
 	factor();
-
 	while (type == TOK_MULTIPLY || type == TOK_DIVIDE) {
+		cg_symbol();
 		next();
 		factor();
 	}
 }
 
 static void
-expression(void)
-{
-
-	if (type == TOK_PLUS || type == TOK_MINUS)
-		next();
-
-	term();
-
-	while (type == TOK_PLUS || type == TOK_MINUS) {
-		next();
-		term();
-	}
-}
-
-static void
 condition(void)
 {
-
 	if (type == TOK_ODD) {
+		cg_symbol();
 		expect(TOK_ODD);
 		expression();
+		cg_odd();
 	} else {
 		expression();
 
@@ -335,12 +740,12 @@ condition(void)
 		case TOK_HASH:
 		case TOK_LESSTHAN:
 		case TOK_GREATERTHAN:
+			cg_symbol();
 			next();
 			break;
 		default:
 			error("invalid conditional");
 		}
-
 		expression();
 	}
 }
@@ -348,38 +753,113 @@ condition(void)
 static void
 statement(void)
 {
-
 	switch (type) {
 	case TOK_IDENT:
+		symcheck(CHECK_LHS);
+		cg_symbol();
 		expect(TOK_IDENT);
+		if (type == TOK_ASSIGN)
+			cg_symbol();
 		expect(TOK_ASSIGN);
 		expression();
 		break;
 	case TOK_CALL:
 		expect(TOK_CALL);
+		if (type == TOK_IDENT) {
+			symcheck(CHECK_CALL);
+			cg_call();
+		}
 		expect(TOK_IDENT);
 		break;
 	case TOK_BEGIN:
+		cg_symbol();
 		expect(TOK_BEGIN);
 		statement();
 		while (type == TOK_SEMICOLON) {
+			cg_semicolon();
 			expect(TOK_SEMICOLON);
 			statement();
 		}
+		if (type == TOK_END)
+			cg_symbol();
 		expect(TOK_END);
 		break;
 	case TOK_IF:
+		cg_symbol();
 		expect(TOK_IF);
 		condition();
+		if (type == TOK_THEN)
+			cg_symbol();
 		expect(TOK_THEN);
 		statement();
 		break;
 	case TOK_WHILE:
+		cg_symbol();
 		expect(TOK_WHILE);
 		condition();
+		if (type == TOK_DO)
+			cg_symbol();
 		expect(TOK_DO);
 		statement();
+		break;
+	case TOK_WRITEINT:
+		expect(TOK_WRITEINT);
+		if (type == TOK_IDENT || type == TOK_NUMBER) {
+			if (type == TOK_IDENT)
+				symcheck(CHECK_RHS);
+			cg_writeint();
+		}
+
+		if (type == TOK_IDENT)
+			expect(TOK_IDENT);
+		else if (type == TOK_NUMBER)
+			expect(TOK_NUMBER);
+		else
+			error("writeInt takes an identifier or a number");
+
+		break;
+	case TOK_WRITECHAR:
+		expect(TOK_WRITECHAR);
+		if (type == TOK_IDENT || type == TOK_NUMBER) {
+			if (type == TOK_IDENT)
+				symcheck(CHECK_RHS);
+			cg_writechar();
+		}
+
+		if (type == TOK_IDENT)
+			expect(TOK_IDENT);
+		else if (type == TOK_NUMBER)
+			expect(TOK_NUMBER);
+		else
+			error("writeChar takes an identifier or a number");
+
+		break;
+	case TOK_READINT:
+		expect(TOK_READINT);
+		if (type == TOK_INTO)
+			expect(TOK_INTO);
+
+		if (type == TOK_IDENT) {
+			symcheck(CHECK_LHS);
+			cg_readint();
+		}
+
+		expect(TOK_IDENT);
+
+		break;
+	case TOK_READCHAR:
+		expect(TOK_READCHAR);
+		if (type == TOK_INTO)
+			expect(TOK_INTO);
+
+		if (type == TOK_IDENT) {
+			symcheck(CHECK_LHS);
+			cg_readchar();
+		}
+
+		expect(TOK_IDENT);
 	}
+	
 }
 
 static void 
@@ -390,13 +870,29 @@ block(void) {
 
     if (type == TOK_CONST) {
 		expect(TOK_CONST);
+		if (type == TOK_IDENT) {
+			addsymbol(TOK_CONST);
+			cg_const();
+		}
 		expect(TOK_IDENT);
 		expect(TOK_EQUAL);
+		if (type == TOK_NUMBER) {
+			cg_symbol();
+			cg_semicolon();
+		}
 		expect(TOK_NUMBER);
 		while (type == TOK_COMMA) {
 			expect(TOK_COMMA);
+			if (type == TOK_IDENT) {
+				addsymbol(TOK_CONST);
+				cg_const();
+			}
 			expect(TOK_IDENT);
 			expect(TOK_EQUAL);
+			if (type == TOK_NUMBER) {
+				cg_symbol();
+				cg_semicolon();
+			}
 			expect(TOK_NUMBER);
 		}
 		expect(TOK_SEMICOLON);
@@ -404,23 +900,45 @@ block(void) {
 
     if (type == TOK_VAR) {
 		expect(TOK_VAR);
+		if (type == TOK_IDENT) {
+			addsymbol(TOK_VAR);
+			cg_var();
+		}
 		expect(TOK_IDENT);
 		while (type == TOK_COMMA) {
 			expect(TOK_COMMA);
+			if (type == TOK_IDENT) {
+				addsymbol(TOK_VAR);
+				cg_var();
+			}
 			expect(TOK_IDENT);
 		}
 		expect(TOK_SEMICOLON);
+		cg_crlf();
 	}
 
     while (type == TOK_PROCEDURE) {
+		proc = 1;
+
 		expect(TOK_PROCEDURE);
+		if (type == TOK_IDENT) {
+			addsymbol(TOK_PROCEDURE);
+			cg_procedure();
+		}
 		expect(TOK_IDENT);
 		expect(TOK_SEMICOLON);
 
 		block();
 
 		expect(TOK_SEMICOLON);
+
+		proc = 0;
+
+		destroysymbols();
 	}
+
+	if (proc == 0)
+		cg_procedure();
 
     statement();
 
@@ -437,6 +955,8 @@ parse(void) {
     if ( type != 0) {
         error("extra tokens at end of file");
     }
+
+	cg_end();
 }
 
 /*
@@ -450,7 +970,7 @@ main(int argc, char *argv[])
     wchar_t *startp;
 
 	if (argc != 2) {
-		(void) fputs("[INFO] Usage: pl0c file.hindi\n", stderr);
+		(void) fputs("[INFO] Usage: hindipl0c file.hindi\n", stderr);
 		exit(1);
 	}
 
