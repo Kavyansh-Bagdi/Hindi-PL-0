@@ -1,6 +1,6 @@
-{ 0001: Comments }
+{ 0001: टिप्पणियाँ }
 {
-  Multi-line comment
+  बहु-पंक्ति टिप्पणी
 }
-. { Inline comment }
-{ End of program comment }
+. { इनलाइन टिप्पणी }
+{ प्रोग्राम का अंत टिप्पणी }
