@@ -164,33 +164,45 @@ readin(char *file)
 	(void) close(fd);
 }
 
-static const char *
-varconversion(const wchar_t *name)
-{
-    struct varmap *curr = varmap_head;
+// static void
+// varconversion(const wchar_t *name)
+// {
+//     struct varmap *curr = varmap_head;
 
-    while (curr) {
-        if (wcscmp(curr->hindi, name) == 0)
-            return curr->english;
-        curr = curr->next;
-    }
+//     while (curr) {
+//         if (wcscmp(curr->hindi, name) == 0)
+//             return;
+//         curr = curr->next;
+//     }
 
-    struct varmap *new = malloc(sizeof(struct varmap));
-    if (!new)
-        error("malloc failed in varconversion");
+//     struct varmap *new = malloc(sizeof(struct varmap));
+//     if (!new)
+//         error("malloc failed in varconversion");
 
-    new->hindi = wcsdup(name);
-    if (!new->hindi)
-        error("malloc failed in varconversion");
+//     new->hindi = wcsdup(name);
+//     if (!new->hindi)
+//         error("malloc failed in varconversion");
 
-    snprintf(new->english, sizeof(new->english), "a%d", ++var_counter);
+//     snprintf(new->english, sizeof(new->english), "a%d", ++var_counter);
 
-    new->next = varmap_head;
-    varmap_head = new;
+//     new->next = varmap_head;
+//     varmap_head = new;
+// }
 
-    return new->english;
-}
+// static const char *
+// get_converted_name(const wchar_t *name)
+// {
+//     struct varmap *curr = varmap_head;
 
+//     while (curr) {
+//         if (wcscmp(curr->hindi, name) == 0)
+//             return curr->english;  
+//         curr = curr->next;
+//     }
+
+// 	error("[Error] : Symbol Table");
+//     return NULL; 
+// }
 
 /*
 * Semantics.
@@ -388,6 +400,8 @@ ident(void)
 		return TOK_READCHAR;
 	else if (!wcscmp(token, L"में"))
 		return TOK_INTO;
+
+	// varconversionl(token);
 	return TOK_IDENT;
 }
 
@@ -459,13 +473,14 @@ static void
 cg_end(void)
 {
 
-	aout(L"}\n/* PL/0 compiler %s */\n", PL0C_VERSION);
+	aout(L"\n/* PL/0 compiler %s */\n", PL0C_VERSION);
 }
 
 static void
 cg_const(void)
 {
 
+	// aout(L"const long %s=", get_converted_name(token));
 	aout(L"const long %s=", token);
 }
 
@@ -481,16 +496,17 @@ cg_symbol(void)
 {
 	switch (type) {
 	case TOK_IDENT:
-		aout(L"%hs", varconversion(token));
+		// aout(L"%hs", get_converted_name(token));
+		aout(L"%hs", token);
 		break;
 	case TOK_NUMBER:
 		aout(L"%s", token);
 		break;
 	case TOK_BEGIN:
-		aout(L"{\n");
+		aout(L"{");
 		break;
 	case TOK_END:
-		aout(L";\n}\n");
+		aout(L";}\n");
 		break;
 	case TOK_IF:
 		aout(L"if(");
@@ -554,22 +570,23 @@ static void
 cg_var(void)
 {
 
-	aout(L"long %hs;\n", varconversion(token));
+	// aout(L"long %hs;\n", get_converted_name(token));
+	aout(L"long %hs;\n", token);
 }
 
 static void
 cg_procedure(void)
 {
-
-	if (proc == 0) {
-		aout(L"int\n");
-		aout(L"main(int argc, char *argv[])\n");
-	} else {
-		aout(L"void\n");
-		aout(L"%s(void)\n", token);
-	}
-
-	aout(L"{\n");
+    if (proc == 0) {
+        aout(L"int\n");
+        aout(L"main(int argc, char *argv[])\n");
+        aout(L"{\n");
+        aout(L"    setlocale(LC_ALL, \"en_US.UTF-8\");\n");
+    } else {
+        aout(L"void\n");
+        aout(L"%s(void)\n", token);
+        aout(L"{\n");
+    }
 }
 
 static void
@@ -601,24 +618,8 @@ cg_odd(void)
 static void
 cg_writechar(void)
 {
+	// aout(L"(void) fprintf(stdout, \"%%c\", (unsigned char) %s);", get_converted_name(token));
 	aout(L"(void) fprintf(stdout, \"%%c\", (unsigned char) %s);", token);
-}
-
-static void
-cg_writeint(void)
-{
-	aout(L"(void) fprintf(stdout, \"%%ld\", (long) %s);", token);
-}
-
-static void
-cg_init(void)
-{
-	aout(L"#include <stdio.h>\n");
-	aout(L"static char __stdin[24];\n\n");
-	aout(L"#include <wchar.h>");
-	aout(L"#include <wctype.h>");
-	aout(L"#include <locale.h>");
-	aout(L"setlocale(LC_ALL, \"en_US.UTF-8\");");
 }
 
 static void
@@ -650,6 +651,23 @@ cg_readint(void)
     aout(L"    exit(1);\n");
     aout(L"}\n");
     aout(L"%s = (long) __val_ll;\n", token);
+}
+
+static void
+cg_writeint(void)
+{
+	// aout(L"(void) fprintf(stdout, \"%%ld\", (long) %s);", get_converted_name(token));
+	aout(L"(void) fprintf(stdout, \"%%ld\", (long) %s);", token);
+}
+
+static void
+cg_init(void)
+{
+	aout(L"#include <stdio.h>\n");
+	aout(L"#include <wchar.h>\n");
+	aout(L"#include <wctype.h>\n");
+	aout(L"#include <locale.h>\n\n");
+	aout(L"static char __stdin[24];\n\n");
 }
 
 
@@ -862,92 +880,97 @@ statement(void)
 	
 }
 
-static void 
-block(void) {
-    if ( depth++ > 1) {
+void block(void)
+{
+    if (depth++ > 1)
         error("nesting depth exceeded");
-    }
 
     if (type == TOK_CONST) {
-		expect(TOK_CONST);
-		if (type == TOK_IDENT) {
-			addsymbol(TOK_CONST);
-			cg_const();
-		}
-		expect(TOK_IDENT);
-		expect(TOK_EQUAL);
-		if (type == TOK_NUMBER) {
-			cg_symbol();
-			cg_semicolon();
-		}
-		expect(TOK_NUMBER);
-		while (type == TOK_COMMA) {
-			expect(TOK_COMMA);
-			if (type == TOK_IDENT) {
-				addsymbol(TOK_CONST);
-				cg_const();
-			}
-			expect(TOK_IDENT);
-			expect(TOK_EQUAL);
-			if (type == TOK_NUMBER) {
-				cg_symbol();
-				cg_semicolon();
-			}
-			expect(TOK_NUMBER);
-		}
-		expect(TOK_SEMICOLON);
-	}
+        expect(TOK_CONST);
+        if (type == TOK_IDENT) {
+            addsymbol(TOK_CONST);
+            cg_const();
+        }
+        expect(TOK_IDENT);
+        expect(TOK_EQUAL);
+        if (type == TOK_NUMBER) {
+            cg_symbol();
+            cg_semicolon();
+        }
+        expect(TOK_NUMBER);
+        while (type == TOK_COMMA) {
+            expect(TOK_COMMA);
+            if (type == TOK_IDENT) {
+                addsymbol(TOK_CONST);
+                cg_const();
+            }
+            expect(TOK_IDENT);
+            expect(TOK_EQUAL);
+            if (type == TOK_NUMBER) {
+                cg_symbol();
+                cg_semicolon();
+            }
+            expect(TOK_NUMBER);
+        }
+        expect(TOK_SEMICOLON);
+    }
 
     if (type == TOK_VAR) {
-		expect(TOK_VAR);
-		if (type == TOK_IDENT) {
-			addsymbol(TOK_VAR);
-			cg_var();
-		}
-		expect(TOK_IDENT);
-		while (type == TOK_COMMA) {
-			expect(TOK_COMMA);
-			if (type == TOK_IDENT) {
-				addsymbol(TOK_VAR);
-				cg_var();
-			}
-			expect(TOK_IDENT);
-		}
-		expect(TOK_SEMICOLON);
-		cg_crlf();
-	}
+        expect(TOK_VAR);
+        if (type == TOK_IDENT) {
+            addsymbol(TOK_VAR);
+            cg_var();
+        }
+        expect(TOK_IDENT);
+        while (type == TOK_COMMA) {
+            expect(TOK_COMMA);
+            if (type == TOK_IDENT) {
+                addsymbol(TOK_VAR);
+                cg_var();
+            }
+            expect(TOK_IDENT);
+        }
+        expect(TOK_SEMICOLON);
+        cg_crlf();
+    }
 
     while (type == TOK_PROCEDURE) {
-		proc = 1;
+        proc = 1;
 
-		expect(TOK_PROCEDURE);
-		if (type == TOK_IDENT) {
-			addsymbol(TOK_PROCEDURE);
-			cg_procedure();
-		}
-		expect(TOK_IDENT);
-		expect(TOK_SEMICOLON);
+        expect(TOK_PROCEDURE);
+        if (type == TOK_IDENT) {
+            addsymbol(TOK_PROCEDURE);
+            cg_procedure();             
+        }
+        expect(TOK_IDENT);
+        expect(TOK_SEMICOLON);
 
-		block();
+        block();                        
+        expect(TOK_SEMICOLON);
 
-		expect(TOK_SEMICOLON);
+        cg_epilogue();                  
 
-		proc = 0;
+        proc = 0;
+        destroysymbols();
+    }
 
-		destroysymbols();
-	}
-
-	if (proc == 0)
-		cg_procedure();
+    if (proc == 0) {
+        cg_procedure();                
+    }
 
     statement();
 
-	if (--depth < 0)
-		error("nesting depth fell below 0");
+    if (proc == 0) {
+        cg_epilogue();                  
+    }
+
+    if (--depth < 0)
+        error("nesting depth fell below 0");
 }
 
 static void 
 parse(void) {
+	cg_init();    
     next();
     block();
     expect(TOK_DOT);
