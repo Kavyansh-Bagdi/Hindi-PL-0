@@ -93,3 +93,7 @@ make test TEST_MODE=-o
 
 - Variable and function names cannot be written in Hindi.
 - Recursion is not used in this project.
+
+**References**
+
+1. [Let's write a compiler by Brian Robert Callahan](https://briancallahan.net/blog/20210814.html)
