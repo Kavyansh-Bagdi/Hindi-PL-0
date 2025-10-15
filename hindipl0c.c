@@ -308,7 +308,7 @@ ident(void)
 {
     wchar_t *start = raw;
     
-    if (!iswalpha(*raw) && *raw != L'_')
+    if (!iswalpha(*raw) && !is_devanagari_combining(*raw) && *raw != L'_')
         error("invalid identifier start: %lc", *raw);
 
     raw++;
@@ -563,7 +563,7 @@ cg_readchar(void)
     aout(L"%s = (long) __wch;\n", get(map,token));
 }
 
-
+static void
 cg_call(void)
 {
 
@@ -581,23 +581,11 @@ static void
 cg_writechar(int isIdent)
 {
 	if(isIdent)
-		aout(L"(void) fprintf(stdout, \"%%c\", (unsigned char) %s);", get(map,token));
-	else	
-		aout(L"(void) fprintf(stdout, \"%%c\", (unsigned char) %s);", token);
-}
+		aout(L"wprintf(L\"%%lc\", (wint_t) %s);", get(map,token));
+	else    
+		aout(L"wprintf(L\"%%lc\", (wint_t) %s);", token);
 
-static void
-cg_readchar(void)
-{
-    aout(L"wint_t __wch = fgetwc(stdin);\n");
-    aout(L"if (__wch == WEOF) {\n");
-    aout(L"    /* treat EOF as -1 or handle error */\n");
-    aout(L"    (void) fprintf(stderr, \"unexpected EOF when reading character\\n\");\n");
-    aout(L"    exit(1);\n");
-    aout(L"}\n");
-    aout(L"%s = (long) __wch;\n", get(map,token));
 }
-
 
 static void
 cg_readint(void)
