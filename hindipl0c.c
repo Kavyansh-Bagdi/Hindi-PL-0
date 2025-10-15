@@ -583,7 +583,7 @@ cg_writechar(int isIdent)
 	if(isIdent)
 		aout(L"wprintf(L\"%%lc\", (wint_t) %s);", get(map,token));
 	else    
-		aout(L"wprintf(L\"%%lc\", (wint_t) %s);", token);
+		aout(L"wprintf(L\"%%lc\", (wint_t) %ls);", token);
 
 }
 
