@@ -1,14 +1,18 @@
 #!/bin/bash
 
-echo Hindi PL/0 compiler test suite
-echo ========================
+echo "Hindi PL/0 compiler test suite"
+echo "========================"
 
-for i in *.hindi ; do
-  /usr/bin/printf "%.4s... " $i
-  ../hidni\ pl0 $i > /dev/null 2>&1
-  if [ $? -eq 0 ] ; then
-    echo ok
+mkdir -p output
+
+for i in *.hindi; do
+  /usr/bin/printf "%.4s... " "$i"  
+  output_file="output/${i%.hindi}.c"
+  ./../hindipl0c "$i" > "$output_file" 2>&1
+  
+  if [ $? -eq 0 ]; then
+    echo "ok"
   else
-    echo fail
+    echo "fail"
   fi
 done
