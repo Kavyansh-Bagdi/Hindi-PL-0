@@ -91,8 +91,7 @@ make test TEST_MODE=-o
 
 **Limitations**
 
-- Variable and function names cannot be written in Hindi.
-- Recursion is not used in this project.
+- Recursion is not used in this language.
 
 **References**
 
